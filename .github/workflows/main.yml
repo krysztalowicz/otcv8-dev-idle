@@ -1,0 +1,124 @@
+name: Build and test pull request
+on: [pull_request]
+
+jobs:
+  Windows:
+    name: Build windows version
+    runs-on: windows-2019
+    timeout-minutes: 90
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+          submodules: recursive
+
+    - name: Setup MSBuild and add to PATH
+      uses: microsoft/setup-msbuild@v1.0.2
+      id: setup_msbuild
+
+    - name: Run vcpkg
+      uses: lukka/run-vcpkg@v7
+      with:
+        vcpkgDirectory: ${{ runner.workspace }}/vcpkg/
+        vcpkgTriplet: x86-windows-static
+        vcpkgGitCommitId: 3b3bd424827a1f7f4813216f6b32b6c61e386b2e
+        vcpkgArguments: >
+          boost-iostreams boost-asio boost-beast boost-system boost-variant boost-lockfree boost-process boost-program-options boost-uuid boost-filesystem
+          luajit glew physfs openal-soft libogg libvorbis zlib libzip bzip2 openssl liblzma
+    - name: Integrate vcpkg
+      run: |
+        ${{ runner.workspace }}\vcpkg\vcpkg integrate install
+        
+    - name: Compile 
+      timeout-minutes: 60
+      run: |
+        cd vc16
+        MSBuild /property:Configuration=DirectX /p:BUILD_REVISION=${{github.run_number}}
+        MSBuild /property:Configuration=OpenGL /p:BUILD_REVISION=${{github.run_number}}
+    - name: Upload binaries
+      uses: 'actions/upload-artifact@v2'
+      with:
+        name: Binaries
+        path: |
+          otclient_gl.exe
+          otclient_dx.exe
+          lib.7z
+        if-no-files-found: error
+
+  Test:
+    name: Test
+    runs-on: windows-2019
+    needs: [Windows]
+    timeout-minutes: 120
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: recursive
+
+    - name: Download binaries
+      uses: actions/download-artifact@v2
+      with:
+        name: Binaries
+
+    - name: Run tests
+      timeout-minutes: 10
+      run: |
+        7z x tests.7z -aoa
+        $process = (Start-Process -Wait -PassThru otclient_dx.exe --test)
+        Get-Content otclientv8.log
+        if ($process.ExitCode -ne 0) {
+          throw "Invalid exit code: " + $process.ExitCode;
+        }
+    - name: Upload otclientv8.log
+      uses: actions/upload-artifact@v2
+      with:
+        path: otclientv8.log
+        name: Download-otclientv8.log
+        if-no-files-found: error
+
+    - name: Copy screenshots
+      run: |
+        $location = Get-Location
+        $pillowScript = @"
+        from PIL import Image
+        import glob
+        for file in glob.glob('*.png'):
+          Image.open(file).convert('RGB').save(
+            file[:-3] + 'jpg',
+            quality=50,
+          )
+        "@
+        cd $env:appdata\otclientv8\otclientv8
+        pip3 install pillow
+        python3 -c $pillowScript
+        cd $location
+        mkdir screenshots
+        Get-ChildItem $env:appdata\otclientv8\otclientv8 -Filter *.jpg `
+        | Copy-Item -Destination screenshots -Force -PassThru
+    - name: Upload screenshot
+      uses: actions/upload-artifact@v2
+      with:
+        path: screenshots
+        name: Download-screenshots
+    
+    - name: Cleanup things
+      run: |
+        Remove-Item 'data\things' -Recurse
+    - name: Upload otclient
+      uses: actions/upload-artifact@v2
+      with:
+        name: Download-otclientv8
+        path: |
+          otclient_gl.exe
+          otclient_dx.exe
+          otclientv8.apk
+          otclient_mac
+          otclient_linux
+          *.dll
+          data
+          modules
+          layouts
+          mods
+          init.lua
+        if-no-files-found: error
